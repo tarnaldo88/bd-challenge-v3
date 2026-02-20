@@ -3,7 +3,8 @@ import {
   getCollectionProductsQuery,
   type GetCollectionProductsResponse,
 } from "@/lib/shopify/graphql/query";
-import { ProductGrid } from "../components";
+import { ProductGrid } from "@/components/product/ProductGrid";
+
 
 const COLLECTION_HANDLE = "a collection should go here";
 
