@@ -98,11 +98,6 @@ export function ProductGrid({ products }: ProductGridProps) {
   };
 
   const closeQuickView = () => {
-    if (openedWithPushRef.current) {
-      router.back();
-      return;
-    }
-
     router.replace(buildUrl(null), { scroll: false });
   };
 
@@ -123,7 +118,6 @@ export function ProductGrid({ products }: ProductGridProps) {
       <AnimatePresence>
         {activeProduct ? (
           <QuickViewModal
-            key={activeProduct.handle}
             handle={activeProduct.handle}
             fallbackProduct={activeProduct}
             prefetchedProduct={prefetchedByHandle[activeProduct.handle] ?? null}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent  } from "react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { Money, QuickViewProduct } from "@/lib/shopify/graphql/query";
 import { QuickViewSkeleton } from "@/components/quick-view/QuickViewSkeleton";
 import type {
@@ -9,8 +9,13 @@ import type {
   QuickViewModalProps,
   QuickViewModalStatus,
 } from "@/components/quick-view/types";
+import {
+  getInitialSelectedOptions,
+  isOptionValueEnabled as isOptionValueEnabledForProduct,
+  resolveVariantFromSelectedOptions,
+  type SelectedOptions,
+} from "@/components/quick-view/variantLogic";
 
-type SelectedOptions = Record<string, string>;
 type AddToBagState = "idle" | "loading" | "success";
 
 const ADD_DELAY_MS = 1000;
@@ -28,6 +33,9 @@ export function QuickViewModal({
   const isMountedRef = useRef(true);
   const titleId = useId();
   const descriptionId = useId();
+  const activeRequestRef = useRef(0);
+  const shouldReduceMotion = useReducedMotion();
+  const [isSwitchLoading, setIsSwitchLoading] = useState(false);
 
   const [status, setStatus] = useState<QuickViewModalStatus>(
     prefetchedProduct ? "ready" : "loading",
@@ -98,44 +106,57 @@ export function QuickViewModal({
   }, [onClose]);
 
   useEffect(() => {
-    if (prefetchedProduct) {
-      setProduct(prefetchedProduct);
-      setSelectedOptions(getInitialSelectedOptions(prefetchedProduct));
+  const controller = new AbortController();
+  const requestId = ++activeRequestRef.current;
+
+  const hasExistingProduct = product !== null;
+
+  if (prefetchedProduct && prefetchedProduct.handle === handle) {
+    setProduct(prefetchedProduct);
+    setSelectedOptions(getInitialSelectedOptions(prefetchedProduct));
+    setStatus("ready");
+    setAddToBagState("idle");
+    setIsSwitchLoading(false);
+    return () => controller.abort();
+  }
+
+  if (!hasExistingProduct) {
+    setStatus("loading");
+  } else {
+    setIsSwitchLoading(true);
+  }
+
+  const loadProduct = async () => {
+    try {
+      const response = await fetch(
+        `/api/shopify/product?handle=${encodeURIComponent(handle)}`,
+        { signal: controller.signal, cache: "no-store" },
+      );
+
+      if (!response.ok) throw new Error("Failed to fetch product");
+
+      const json = (await response.json()) as QuickViewApiResponse;
+      if (controller.signal.aborted || requestId !== activeRequestRef.current) return;
+
+      setProduct(json.product);
+      setSelectedOptions(getInitialSelectedOptions(json.product));
       setStatus("ready");
       setAddToBagState("idle");
-      return;
-    }
+      setIsSwitchLoading(false);
+    } catch {
+      if (controller.signal.aborted || requestId !== activeRequestRef.current) return;
 
-    const controller = new AbortController();
-
-    const loadProduct = async () => {
-      try {
-        setStatus("loading");
-        setProduct(null);
-        setSelectedOptions({});
-        setAddToBagState("idle");
-
-        const response = await fetch(
-          `/api/shopify/product?handle=${encodeURIComponent(handle)}`,
-          { signal: controller.signal, cache: "no-store" },
-        );
-
-        if (!response.ok) throw new Error("Failed to fetch product");
-
-        const json = (await response.json()) as QuickViewApiResponse;
-        const loadedProduct = json.product;
-
-        setProduct(loadedProduct);
-        setSelectedOptions(getInitialSelectedOptions(loadedProduct));
-        setStatus("ready");
-      } catch {
-        if (!controller.signal.aborted) setStatus("error");
+      if (!hasExistingProduct) {
+        setStatus("error");
       }
-    };
+      setIsSwitchLoading(false);
+    }
+  };
 
-    void loadProduct();
+  void loadProduct();
     return () => controller.abort();
   }, [handle, prefetchedProduct]);
+
 
   const firstAvailableVariant = useMemo(() => {
     if (!product) return null;
@@ -148,19 +169,7 @@ export function QuickViewModal({
 
   const resolvedVariant = useMemo(() => {
     if (!product) return null;
-
-    const allOptionsSelected = product.options.every(
-      (option) => Boolean(selectedOptions[option.name]),
-    );
-    if (!allOptionsSelected) return null;
-
-    return (
-      product.variants.nodes.find((variant) =>
-        variant.selectedOptions.every(
-          (selected) => selectedOptions[selected.name] === selected.value,
-        ),
-      ) ?? null
-    );
+    return resolveVariantFromSelectedOptions(product, selectedOptions);
   }, [product, selectedOptions]);
 
   const displayedVariant = resolvedVariant ?? firstAvailableVariant;
@@ -169,21 +178,55 @@ export function QuickViewModal({
   const displayedImage =
     displayedVariant?.image ?? product?.featuredImage ?? fallbackProduct.featuredImage;
 
+  const displayedCompareAtPrice = displayedVariant?.compareAtPrice ?? null;
+
+  const thumbnails = useMemo(() => {
+    if (!product) return [];
+
+    const map = new Map<
+      string,
+      { key: string; imageUrl: string; alt: string; selectedOptions: SelectedOptions }
+    >();
+
+    for (const variant of product.variants.nodes) {
+      if (!variant.image) continue;
+      const key = variant.image.url;
+      if (map.has(key)) continue;
+
+      const optionMap = variant.selectedOptions.reduce<SelectedOptions>((acc, option) => {
+        acc[option.name] = option.value;
+        return acc;
+      }, {});
+
+      map.set(key, {
+        key,
+        imageUrl: variant.image.url,
+        alt: variant.image.altText ?? variant.title,
+        selectedOptions: optionMap,
+      });
+    }
+
+    return Array.from(map.values());
+  }, [product]);
+
+  const activeImageKey = displayedImage?.url ?? "fallback-image";
+
+  const handleThumbnailSelect = (next: SelectedOptions) => {
+    setSelectedOptions((prev) => ({ ...prev, ...next }));
+  };
+
+
   const canAddToBag =
     Boolean(resolvedVariant?.availableForSale) && addToBagState === "idle";
 
   const isOptionValueEnabled = (optionName: string, value: string): boolean => {
     if (!product) return false;
-
-    return product.variants.nodes.some((variant) => {
-      if (!variant.availableForSale) return false;
-
-      return variant.selectedOptions.every((selected) => {
-        if (selected.name === optionName) return selected.value === value;
-        const pickedValue = selectedOptions[selected.name];
-        return pickedValue ? pickedValue === selected.value : true;
-      });
-    });
+    return isOptionValueEnabledForProduct(
+      product,
+      selectedOptions,
+      optionName,
+      value,
+    );
   };
 
   const handleOptionArrowNavigation = (
@@ -267,16 +310,16 @@ export function QuickViewModal({
         aria-describedby={descriptionId}
         className="relative z-10 w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
-        initial={{ opacity: 0, y: 12, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 8, scale: 0.98 }}
-        transition={{ duration: 0.2, ease: "easeOut" }}
+        initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.98 }}
+        animate={shouldReduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+        exit={shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: shouldReduceMotion ? 0 : 0.2, ease: "easeOut" }}
       >
         <button
           ref={closeButtonRef}
           type="button"
           onClick={onClose}
-          className="absolute right-4 top-4 rounded-full border border-zinc-200 bg-white px-3 py-1 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+          className="absolute right-4 top-4 z-30 rounded-full border border-zinc-200 bg-white px-3 py-1 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
         >
           Close
         </button>
@@ -297,28 +340,107 @@ export function QuickViewModal({
           </div>
         ) : product ? (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-2">
-              <motion.div
-                layoutId={imageLayoutId}
-                className="aspect-[4/5] overflow-hidden bg-zinc-100"
-              >
-                {displayedImage ? (
-                  <img
-                    src={displayedImage.url}
-                    alt={displayedImage.altText ?? product.title}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <div className="h-full w-full bg-zinc-200" />
-                )}
-              </motion.div>
+            <div className="relative grid grid-cols-1 md:grid-cols-2">
+              <div className="space-y-3">
+                <motion.div
+                  layoutId={imageLayoutId}
+                  className="aspect-[4/5] overflow-hidden bg-zinc-100"
+                >
+                  <AnimatePresence mode="wait" initial={false}>
+                    {displayedImage ? (
+                      <motion.img
+                        key={activeImageKey}
+                        src={displayedImage.url}
+                        alt={displayedImage.altText ?? product.title}
+                        className="h-full w-full object-cover"
+                        initial={shouldReduceMotion ? false : { opacity: 0.25 }}
+                        animate={{ opacity: 1 }}
+                        exit={shouldReduceMotion ? undefined : { opacity: 0.25 }}
+                        transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+                      />
+                    ) : (
+                      <motion.div
+                        key="no-image"
+                        className="h-full w-full bg-zinc-200"
+                        initial={shouldReduceMotion ? false : { opacity: 0.25 }}
+                        animate={{ opacity: 1 }}
+                        exit={shouldReduceMotion ? undefined : { opacity: 0.25 }}
+                        transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+                      />
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+
+                {thumbnails.length > 1 ? (
+                  <div className="flex gap-2 overflow-x-auto px-1 pb-1">
+                    {thumbnails.map((thumb) => {
+                      const selected = thumb.imageUrl === activeImageKey;
+                      return (
+                        <button
+                          key={thumb.key}
+                          type="button"
+                          onClick={() => handleThumbnailSelect(thumb.selectedOptions)}
+                          className="relative h-16 w-16 shrink-0 overflow-hidden rounded-md border border-zinc-300"
+                          aria-pressed={selected}
+                          aria-label={`Show image ${thumb.alt}`}
+                        >
+                          {selected ? (
+                            <motion.span
+                              layoutId="active-thumbnail-ring"
+                              className="absolute inset-0 z-10 rounded-md border-2 border-zinc-900"
+                              transition={{ duration: shouldReduceMotion ? 0 : 0.18 }}
+                            />
+                          ) : null}
+                          <img
+                            src={thumb.imageUrl}
+                            alt={thumb.alt}
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
 
               <div className="flex flex-col gap-6 p-6 pb-28 md:p-8 md:pb-8">
                 <header>
                   <h3 id={titleId} className="text-2xl font-semibold text-zinc-900">
                     {product.title}
                   </h3>
-                  <p className="mt-2 text-lg text-zinc-700">{formatMoney(displayedPrice)}</p>
+
+                  <motion.div layout className="mt-2 flex items-center gap-2">
+                    <AnimatePresence mode="popLayout" initial={false}>
+                      <motion.p
+                        key={`price-${displayedPrice.currencyCode}-${displayedPrice.amount}`}
+                        layout
+                        className="text-lg text-zinc-700"
+                        initial={shouldReduceMotion ? false : { opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={shouldReduceMotion ? undefined : { opacity: 0, y: -4 }}
+                        transition={{ duration: shouldReduceMotion ? 0 : 0.16 }}
+                      >
+                        {formatMoney(displayedPrice)}
+                      </motion.p>
+                    </AnimatePresence>
+
+                    <AnimatePresence mode="popLayout" initial={false}>
+                      {displayedCompareAtPrice ? (
+                        <motion.p
+                          key={`compare-${displayedCompareAtPrice.currencyCode}-${displayedCompareAtPrice.amount}`}
+                          layout
+                          className="text-sm text-zinc-500 line-through"
+                          initial={shouldReduceMotion ? false : { opacity: 0, y: 4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={shouldReduceMotion ? undefined : { opacity: 0, y: -4 }}
+                          transition={{ duration: shouldReduceMotion ? 0 : 0.16 }}
+                        >
+                          {formatMoney(displayedCompareAtPrice)}
+                        </motion.p>
+                      ) : null}
+                    </AnimatePresence>
+                  </motion.div>
+
                   {product.description ? (
                     <p id={descriptionId} className="mt-4 text-sm leading-relaxed text-zinc-600">
                       {product.description}
@@ -343,6 +465,7 @@ export function QuickViewModal({
                             <button
                               key={value}
                               type="button"
+                              data-option-button="true"
                               aria-pressed={selected}
                               disabled={!enabled}
                               onKeyDown={handleOptionArrowNavigation}
@@ -384,6 +507,12 @@ export function QuickViewModal({
                   {ctaLabel}
                 </button>
               </div>
+
+              {isSwitchLoading ? (
+                <div className="pointer-events-none absolute inset-0 z-20 bg-white/80 backdrop-blur-[1px]">
+                  <QuickViewSkeleton />
+                </div>
+              ) : null}
             </div>
 
             <div className="fixed inset-x-0 bottom-0 z-[60] border-t border-zinc-200 bg-white/95 p-4 backdrop-blur md:hidden">
@@ -405,19 +534,6 @@ export function QuickViewModal({
       </motion.section>
     </motion.div>
   );
-}
-
-function getInitialSelectedOptions(product: QuickViewProduct): SelectedOptions {
-  const variant =
-    product.variants.nodes.find((item) => item.availableForSale) ??
-    product.variants.nodes[0];
-
-  if (!variant) return {};
-
-  return variant.selectedOptions.reduce<SelectedOptions>((acc, option) => {
-    acc[option.name] = option.value;
-    return acc;
-  }, {});
 }
 
 function formatMoney(money: Money): string {

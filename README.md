@@ -158,3 +158,22 @@ NEXT_PUBLIC_SHOPIFY_STOREFRONT_API_VERSION="2025-10"
 
 1. `pnpm dev` -> Start development server
 2. `pnpm codegen` -> Generate storefront api types (`/lib/shopify/graphql`)
+3. `pnpm test` -> Run unit/component tests
+
+## Testing Notes
+
+Implemented in this submission:
+- Unit tests for variant logic (`components/quick-view/__tests__/variantLogic.test.ts`)
+  - Initial option selection from first available variant
+  - Variant resolution from selected options
+  - Disabled option values for partial selections
+- Component accessibility tests (`components/quick-view/__tests__/QuickViewModal.a11y.test.tsx`)
+  - Dialog semantics + focus moves into modal
+  - Escape key closes modal
+
+Planned broader coverage with more time:
+- ProductGrid route-driven modal behavior (`quickView` query param, back/forward history)
+- Focus return to triggering card on modal close
+- Add-to-bag transition timing states (`idle -> loading -> success -> idle`)
+- Prefetch behavior on hover/focus and in-flight deduping
+- E2E mobile checks for sticky CTA and variant/image/price transitions
