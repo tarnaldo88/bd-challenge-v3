@@ -98,6 +98,11 @@ export function ProductGrid({ products }: ProductGridProps) {
   };
 
   const closeQuickView = () => {
+    if (openedWithPushRef.current) {
+      router.back();
+      return;
+    }
+
     router.replace(buildUrl(null), { scroll: false });
   };
 
