@@ -47,7 +47,7 @@ export default async function Home() {
         <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">
           Bryt Designs Challenge
         </p>
-        <h1 className="text-3xl font-semibold text-green-900 md:text-4xl ">
+        <h1 className="text-3xl font-semibold text-white-900 md:text-4xl ">
           Shopify Quick View Modal
         </h1>
       </header>
