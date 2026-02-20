@@ -34,4 +34,21 @@ describe("variant logic", () => {
     expect(isOptionValueEnabled(product, partial, "Size", "M")).toBe(false);
     expect(isOptionValueEnabled(product, partial, "Size", "L")).toBe(true);
   });
+
+  it("returns null when selectedOptions is incomplete", () => {
+    const variant = resolveVariantFromSelectedOptions(product, {
+      Color: "Black",
+    });
+
+    expect(variant).toBeNull();
+  });
+
+  it("returns null when selectedOptions do not match any variant", () => {
+    const variant = resolveVariantFromSelectedOptions(product, {
+      Color: "NotARealColor",
+      Size: "M",
+    });
+
+    expect(variant).toBeNull();
+  })
 });
